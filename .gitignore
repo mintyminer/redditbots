@@ -1,0 +1,12 @@
+#Files
+*.db
+config.py
+test.py
+
+#Python Files
+*.pyc
+*.pyo
+
+#PyCharm
+.idea
+.iml

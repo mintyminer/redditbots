@@ -1,0 +1,8 @@
+config = {
+    'reddit_username'   : '',
+    'reddit_password'   : '',
+    'user_agent'        : '',
+    'redditlog_token'   : '',
+    'subreddit_list'    : [],
+    'database_file'     : ''
+}
