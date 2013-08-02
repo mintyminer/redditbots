@@ -204,6 +204,6 @@ if __name__ == '__main__':
     #Run program
     go()
 
-#Close DB Connection
-cursor.close()
-db.close()
+    #Close DB Connection
+    cursor.close()
+    db.close()
