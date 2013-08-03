@@ -1,5 +1,7 @@
 #!/usr/bin/python
 
+#Released under an MIT License by mintyminer. Code available at https://github.com/mintyminer/redditbots
+
 import os
 import logging
 import praw

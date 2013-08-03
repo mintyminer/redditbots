@@ -14,3 +14,10 @@ Todo
 * Comment more of the code
 * Actually build test cases
 
+License
+---------------------------
+
+MIT
+
+Pretty much do what ever you want with it but im not responsible if you do something stupid.
+
