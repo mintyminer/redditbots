@@ -23,159 +23,143 @@ SUBREDDIT_LIST = config['subreddit_list']
 
 
 #Logging Settings
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 
-def add_comment(id,comment):
-    #This is a sanity check. Prevents race conditions and other weird things
-    if not cursor.execute('SELECT id FROM processed WHERE id = ?',(id,)).fetchone() == None:
-        logging.warning('Why is %s being reposted'%id)
+#Some Regex
+reddit_link_pattern = re.compile(r'https?://([a-z0-9-]+\.)*reddit\.com(/.*)?')
+
+
+def make_link(text, url):
+    if not url: return text
+    return '[{}]({})'.format(text, url)
+
+
+def format_link(url, label = None):
+    result = make_link('SnapShot', url)
+    if label: result = '* {} - {}'.format(label, result)
+    return result
+
+
+def build_comment(links):
+    # `links` is a sequence of (URL for snapshot, label for link) pairs
+    return '\n'.join(format_link(*link) for link in links) + '\n\n({})'.format(' | '.join(
+        make_link(text, url)
+        for text, url in (
+            ('mirror', None),
+            ('open source', 'https://github.com/mintyminer/redditbots'),
+            ('create your own snapshots', 'http://redditlog.com')
+        )
+    ))
+
+
+def in_database(id):
+    return cursor.execute('SELECT id FROM processed WHERE id = ?', (id,)).fetchone() is not None
+
+
+def add_comment(reddit_interface, id, comment):
+    # This is a sanity check. Prevents race conditions and other weird things
+    if in_database(id):
+        logging.warning('Why is {} being reposted'.format(id))
         return
+
     try:
-        comment += """
-
-(Mirror | [open source](https://github.com/mintyminer/redditbots) | [create your own snapshots](http://redditlog.com))
-        """
-
-        submission = r.get_submission(submission_id=id)
-        submission.add_comment(comment)
+        r.get_submission(submission_id = id).add_comment(comment)
     except:
-        logging.error('Something went wrong with %s' %id)
-
-
-def check_link(link):
-    """Checks link to make sure its from reddit.com, return true if it is"""
-    if re.findall(r'https?://([a-z0-9-]+\.)*reddit\.com(/.*)?', link) != []:
-        return True
-    else:
-        return False
+        logging.error('Something went wrong with %s' % id)
 
 
 def add_to_processed(id):
-    cursor.execute('INSERT INTO processed(id) VALUES(?)',(id,))
+    cursor.execute('INSERT INTO processed(id) VALUES(?)', (id,))
     db.commit()
-    logging.debug('Added %s to database' %id)
+    logging.debug('Added %s to database' % id)
 
 
 def get_reddit_posts(subreddit):
-    subreddit_url = "http://www.reddit.com/r/"+subreddit+"/new/.json?sort=new"
-    request = requests.get(subreddit_url, headers={'User-Agent': USER_AGENT})
-    if request.status_code == 200:
-        data = request.json()
-        return data['data']['children']
-    else:
-        return False
+    subreddit_url = "http://www.reddit.com/r/{}/new/.json?sort=new".format(subreddit)
+    headers = {'User-Agent': USER_AGENT}
+    return requests.get(subreddit_url, headers = headers).json()['data']['children']
+
 
 def get_snapshot(url):
-    payload = {'token':REDDITLOG_TOKEN,'url':url}
-    request = requests.get('http://www.redditlog.com/api/add', params=payload)
+    payload = {'token': REDDITLOG_TOKEN, 'url': url}
+    json = requests.get('http://www.redditlog.com/api/add', params = payload).json()
+    if json['status'] != 1: raise ValueError('Failed to upload to redditlog')
+    return json['data']['direct_url']
 
-    if request.status_code == 200 and request.json()['status'] == 1:
-        return request.json()['data']['direct_url']
-    else:
-        return False
-
-def extract_links_old(html_text):
-    link_list = []
-    html_text = html_text.encode('utf-8')
-    links = re.findall(r'(?<=href=")([^"]+)"&gt;(.*?)\b&lt;', str(html_text))
-    if links != []:
-        for link in links:
-            link = list(link)
-            if link[0][:1] == '/':
-                link[0] = 'http://www.reddit.com' + link[0]
-            if check_link(link[0]) == True:
-                link_list.append(link)
-    logging.debug(link_list)
-    return link_list
-
-def extract_links(html_text):
-    link_list = []
+def process_links(html_text):
     html = HTMLParser.HTMLParser().unescape(html_text)
     soup = BeautifulSoup(html)
     for item in soup.find_all('a'):
         link = item.get('href')
-        text =  item.text
+        text = item.text
 
-        if check_link(link) == False:
+        if not reddit_link_pattern.match(link):
             continue
 
-        if link[0] == '/':
-            link = 'http://reddit.com'+link
-
         if len(text) > 25:
-            text = text[0:25]+ '...'
+            text = text[:25]+ '...'
 
-        link_list.append([text,link])
+        # Borrowed from the old calling code
+        text = HTMLParser.HTMLParser().unescape(text)
 
-    return link_list
+        # Now we just do the redditlog submission in the inner loop.
+        try:
+            snapshot_url = get_snapshot(link)
+        except:
+            continue
 
-def process_link_post(post):
-    if check_link(post['url']):
-        snapshot_url = get_snapshot(post['url'])
-        if snapshot_url:
-            comment = """[SnapShot](%s)""" % (snapshot_url)
-            add_comment(post['id'],comment)
+        logging.info(snapshot_url)
+        yield (snapshot_url, text)
 
 
-def process_self_post(post):
-            has_links = 0
+def process_link_post(id, url):
+    if not reddit_link_pattern.match(url): return None
 
-            #Extract links with title
-            links = extract_links(post['selftext_html'])
+    try:
+        return build_comment(((get_snapshot(url),),))
+        #return build_comment((get_snapshot(url),))
+    except:
+        return None
 
-            if links:
-                #Set message as empty
-                reddit_text = ''
 
-                #Foreach link
-                for link in links:
-                    #Get data
-                    link_text = HTMLParser.HTMLParser().unescape(link[0]) #unescape the html characters in text
-                    link_url = link[1]
+def process_self_post(id, body):
+    # Look how much simpler this becomes with proper organization.
+    links = list(process_links(body))
+    return build_comment(links) if links else None
 
-                    #If url matchs reddit
-                    if check_link(link_url) == True:
-                        snapshot_url = get_snapshot(link_url)
-                        if not snapshot_url:
-                            continue
-                        has_links = 1
-                        print snapshot_url
-                        reddit_text += """
-* %s - [Snapshot](%s)""" % (link_text, snapshot_url)
-                if has_links == 1 and reddit_text != '':
-                    #Send comment to reddit
-                    add_comment(post['id'],reddit_text)
 
-def process_post(post):
+def process_post(reddit_interface, post):
     id = post['id']
 
-    if not cursor.execute('SELECT id FROM processed WHERE id = ?',(id,)).fetchone() == None:
-        logging.debug('Post Id; %s has already been processed' %(id))
+    if in_database(id):
+        logging.debug('Post Id: {} has already been processed'.format('id'))
         return
 
     if post['selftext']:
-        logging.debug(id +' is self post')
-        process_self_post(post)
+        logging.debug(id + ' is self post')
+        comment = process_self_post(id, post['selftext_html'])
     else:
-        logging.debug(id + 'is link post')
-        process_link_post(post)
+        logging.debug(id + ' is link post')
+        comment = process_link_post(id, post['url'])
+
+    if comment:
+        add_comment(reddit_interface, id, comment)
 
     add_to_processed(id)
 
 
-
-def go():
+def main(reddit_interface):
     for subreddit in SUBREDDIT_LIST:
-        posts = get_reddit_posts(subreddit)
-        if not posts:
-            logging.error('Posts for %s did not load'%(subreddit))
+        try:
+            posts = get_reddit_posts(subreddit)
+            logging.debug(posts)
+        except:
+            logging.error('Posts for %s did not load' % (subreddit))
             continue
 
         for post in posts:
-                logging.info(post['data']['id'])
-                process_post(post['data'])
-
-
+            logging.info(post['data']['id'])
+            process_post(reddit_interface, post['data'])
 
 
 if __name__ == '__main__':
@@ -189,23 +173,19 @@ if __name__ == '__main__':
     #Setup database table if it doesnt exist
     cursor.execute('CREATE TABLE IF NOT EXISTS processed(id CHAR(10), timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(id) ON CONFLICT ABORT)')
 
-    #Connect to Reddit
+
+    # Connect to Reddit.
     try:
-        r = praw.Reddit(user_agent=USER_AGENT)
+        r = praw.Reddit(user_agent = USER_AGENT)
         r.login(REDDIT_USERNAME, REDDIT_PASSWORD)
     except praw.errors.InvalidUser:
         logging.error('Invalid User. Could not log onto reddit.')
-        exit()
     except praw.errors.InvalidUserPass:
-        logging.warning('Invalid User. Could not log into reddit.')
-        exit()
+        logging.error('Invalid Password. Could not log onto reddit.')
     except:
-        logging.warning('Could not log into reddit for some reason. Exiting Program')
-        exit()
-
-    #Run program
-    go()
-
-    #Close DB Connection
-    cursor.close()
-    db.close()
+        logging.error('Could not log into reddit for some reason. Exiting Program')
+    else: #Once connected to reddit run main program.
+        main(r)
+    finally: # TODO: see if this can be handled with context managers.
+        cursor.close()
+        db.close()

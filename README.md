@@ -14,6 +14,11 @@ Todo
 * Comment more of the code
 * Actually build test cases
 
+Contributors
+--------------------------
+* mintyminer
+* [zahlman](http://www.reddit.com/user/zahlman)
+
 License
 ---------------------------
 
